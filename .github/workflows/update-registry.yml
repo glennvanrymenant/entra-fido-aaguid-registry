@@ -1,0 +1,38 @@
+name: Update Entra FIDO AAGUID registry
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    - cron: '17 06 * * 1'
+      timezone: 'Europe/Brussels'
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Update dataset
+        shell: pwsh
+        run: ./scripts/Update-EntraFidoRegistry.ps1
+
+      - name: Commit dataset changes
+        shell: bash
+        run: |
+          if [ -z "$(git status --porcelain -- data/entra-fido-aaguids.json)" ]; then
+            echo "Dataset has not changed."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/entra-fido-aaguids.json
+          git commit -m "Update Entra FIDO AAGUID registry"
+          git push
