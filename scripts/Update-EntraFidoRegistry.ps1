@@ -63,22 +63,67 @@ else {
     $null
 }
 
-$RowPattern = '(?m)^(?<Description>[^|\r\n]+?)\s*\|\s*(?<Aaguid>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\s*\|\s*(?<Bio>✅|❌)\s*\|\s*(?<Usb>✅|❌)\s*\|\s*(?<Nfc>✅|❌)\s*\|\s*(?<Ble>✅|❌)\s*$'
-$Matches = [regex]::Matches($Section, $RowPattern)
+function ConvertTo-CapabilityBoolean {
+    param (
+        [Parameter(Mandatory)]
+        [string] $Value
+    )
 
-if ($Matches.Count -lt 10) {
-    throw "Only $($Matches.Count) AAGUID rows were parsed. The Microsoft page format may have changed, so the dataset was not updated."
+    $Value = $Value.Trim()
+
+    if ($Value.Contains([char] 0x2705)) {
+        return $true
+    }
+
+    if ($Value.Contains([char] 0x274C)) {
+        return $false
+    }
+
+    switch ($Value.ToLowerInvariant()) {
+        'true'  { return $true }
+        'yes'   { return $true }
+        '1'     { return $true }
+        'false' { return $false }
+        'no'    { return $false }
+        '0'     { return $false }
+        default { throw "Unexpected capability value '$Value' in Microsoft table." }
+    }
 }
 
-$ScrapedEntries = foreach ($Match in $Matches) {
-    [PSCustomObject][ordered]@{
-        Description = $Match.Groups['Description'].Value.Trim()
-        Aaguid      = $Match.Groups['Aaguid'].Value.ToLowerInvariant()
-        Bio         = $Match.Groups['Bio'].Value -eq '✅'
-        Usb         = $Match.Groups['Usb'].Value -eq '✅'
-        Nfc         = $Match.Groups['Nfc'].Value -eq '✅'
-        Ble         = $Match.Groups['Ble'].Value -eq '✅'
+$AaguidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+
+$ScrapedEntries = foreach ($Line in ($Section -split '\r?\n')) {
+    if ($Line -notmatch '\|') {
+        continue
     }
+
+    $Columns = @(
+        $Line -split '\|' |
+            ForEach-Object { $_.Trim() }
+    )
+
+    if ($Columns.Count -lt 6) {
+        continue
+    }
+
+    if ($Columns[1] -notmatch $AaguidPattern) {
+        continue
+    }
+
+    [PSCustomObject][ordered]@{
+        Description = $Columns[0]
+        Aaguid      = $Columns[1].ToLowerInvariant()
+        Bio         = ConvertTo-CapabilityBoolean -Value $Columns[2]
+        Usb         = ConvertTo-CapabilityBoolean -Value $Columns[3]
+        Nfc         = ConvertTo-CapabilityBoolean -Value $Columns[4]
+        Ble         = ConvertTo-CapabilityBoolean -Value $Columns[5]
+    }
+}
+
+$ScrapedEntries = @($ScrapedEntries)
+
+if ($ScrapedEntries.Count -lt 10) {
+    throw "Only $($ScrapedEntries.Count) AAGUID rows were parsed. The Microsoft page format may have changed, so the dataset was not updated."
 }
 
 $DuplicateAaguids = $ScrapedEntries |
