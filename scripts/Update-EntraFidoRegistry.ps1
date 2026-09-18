@@ -69,13 +69,22 @@ function ConvertTo-CapabilityBoolean {
         [string] $Value
     )
 
-    $Value = $Value.Trim()
+    $Value = [System.Net.WebUtility]::HtmlDecode($Value).Trim()
+    $Value = [regex]::Replace($Value, '<[^>]+>', '').Trim()
 
     if ($Value.Contains([char] 0x2705)) {
         return $true
     }
 
     if ($Value.Contains([char] 0x274C)) {
+        return $false
+    }
+
+    if ($Value.Contains([char] 0x2714)) {
+        return $true
+    }
+
+    if ($Value.Contains([char] 0x2716)) {
         return $false
     }
 
