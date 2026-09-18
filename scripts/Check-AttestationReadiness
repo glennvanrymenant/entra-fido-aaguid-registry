@@ -1,0 +1,75 @@
+# credit to Fabian
+# for an all-in-one solution, see https://github.com/f-bader/EntraIDPasskeyHelper
+
+# --- Make sure we have an open Graph SDK session with the scopes this script needs ---------
+$RequiredScopes = @("AuditLog.Read.All", "UserAuthenticationMethod.Read.All")
+$Context = Get-MgContext
+if (-not $Context -or @($RequiredScopes | Where-Object { $_ -notin $Context.Scopes }).Count -gt 0) {
+    Connect-MgGraph -UseDeviceAuthentication -Scopes $RequiredScopes
+}
+
+$NextUri = "https://graph.microsoft.com/beta/reports/authenticationMethods/userRegistrationDetails?`$filter=methodsRegistered/any(x:x eq 'passKeyDeviceBound')"
+do {
+    $Result = Invoke-MgGraphRequest -Uri $NextUri
+    $NextUri = $Result['@odata.nextLink']
+    $ReturnValue += $Result['value']
+} while (-not [string]::IsNullOrWhiteSpace($NextUri) )
+
+$FIDO2Users = $ReturnValue |  Select-Object id, userPrincipalName
+
+$FIDOKeysRegistered = [System.Collections.ArrayList]::new()
+
+foreach ($User in $FIDO2Users) {
+    $CurrentMethods = Invoke-MGGraphRequest -Uri "https://graph.microsoft.com/v1.0/users/$($User.id)/authentication/fido2Methods" | Select-Object -ExpandProperty value
+    $CurrentMethods | % { $FIDOKeysRegistered.Add($_) | Out-Null }
+}
+
+$TenantAaGuids = $FIDOKeysRegistered | Select-Object aaGuid, model -Unique | Sort-Object model
+
+# --- Cross-check the AAGUIDs registered in the tenant against the Entra FIDO AAGUID registry ---
+# --- Combines Microsoft's published attestation-eligible security key list with the ------------
+# --- manually maintained AAGUIDs (e.g. Microsoft Authenticator, Windows Hello) ------------------
+$RegistryUri = "https://raw.githubusercontent.com/glennvanrymenant/entra-fido-aaguid-registry/main/data/entra-fido-aaguids.json"
+$ManualRegistryUri = "https://raw.githubusercontent.com/glennvanrymenant/entra-fido-aaguid-registry/main/data/manual-aaguids.json"
+
+$Registry = Invoke-RestMethod -Uri $RegistryUri
+$ManualRegistry = Invoke-RestMethod -Uri $ManualRegistryUri
+
+$RegistryLookup = @{}
+foreach ($Entry in $Registry.Entries) {
+    $RegistryLookup[$Entry.Aaguid] = [PSCustomObject]@{
+        Description = $Entry.Description
+        Active      = $Entry.Active
+        RemovedOn   = $Entry.RemovedOn
+        Source      = "Microsoft FIDO2 vendor list"
+    }
+}
+foreach ($Entry in $ManualRegistry) {
+    $RegistryLookup[$Entry.Aaguid] = [PSCustomObject]@{
+        Description = $Entry.Description
+        Active      = $true
+        RemovedOn   = $null
+        Source      = "Manual addition"
+    }
+}
+
+$AttestationReport = foreach ($Key in $TenantAaGuids) {
+    $RegistryEntry = $RegistryLookup[$Key.aaGuid]
+    [PSCustomObject]@{
+        AaGuid              = $Key.aaGuid
+        TenantModel         = $Key.model
+        RegistryDescription = $RegistryEntry.Description
+        Source              = $RegistryEntry.Source
+        RegistryStatus      = if (-not $RegistryEntry) { "Unknown / not in registry" }
+                               elseif ($RegistryEntry.Active) { "Known (active)" }
+                               else { "Known (removed $($RegistryEntry.RemovedOn))" }
+    }
+}
+
+$AttestationReport | Sort-Object RegistryStatus, TenantModel | Format-Table -AutoSize
+
+$UnknownAaGuids = $AttestationReport | Where-Object { $_.RegistryStatus -eq "Unknown / not in registry" }
+if ($UnknownAaGuids) {
+    Write-Host "`nWARNING: $($UnknownAaGuids.Count) AAGUID(s) registered in the tenant are not present in the Entra FIDO AAGUID registry ($RegistryUri) or the manual list ($ManualRegistryUri):" -ForegroundColor Yellow
+    $UnknownAaGuids | Format-Table AaGuid, TenantModel -AutoSize
+}
