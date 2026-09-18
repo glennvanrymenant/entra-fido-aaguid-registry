@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Update dataset
         shell: pwsh
@@ -25,7 +25,7 @@ jobs:
       - name: Commit dataset changes
         shell: bash
         run: |
-          if [ -z "$(git status --porcelain -- data/entra-fido-aaguids.json)" ]; then
+          if git diff --quiet -- data/entra-fido-aaguids.json; then
             echo "Dataset has not changed."
             exit 0
           fi

@@ -4,7 +4,10 @@ param (
     [string] $SourceUri = 'https://raw.githubusercontent.com/MicrosoftDocs/entra-docs/main/docs/identity/authentication/concept-fido2-hardware-vendor.md',
 
     [Parameter()]
-    [string] $OutputPath = (Join-Path $PSScriptRoot '..' 'data' 'entra-fido-aaguids.json')
+    [string] $OutputPath = (Join-Path $PSScriptRoot '..' 'data' 'entra-fido-aaguids.json'),
+
+    [Parameter()]
+    [string] $ManualPath = (Join-Path $PSScriptRoot '..' 'data' 'manual-aaguids.json')
 )
 
 Set-StrictMode -Version Latest
@@ -14,79 +17,16 @@ $LearnUrl = 'https://learn.microsoft.com/en-us/entra/identity/authentication/con
 $Today = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
 $Now = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
 
-Write-Host "Downloading Microsoft Entra documentation source..."
-$Response = Invoke-WebRequest -Uri $SourceUri -Method Get
-$Content = $Response.Content
-
-$SectionHeading = '## FIDO2 security keys eligible for attestation with Microsoft Entra ID'
-$SectionStart = $Content.IndexOf($SectionHeading, [StringComparison]::Ordinal)
-
-if ($SectionStart -lt 0) {
-    throw "Could not find the expected FIDO2 attestation section in the Microsoft document."
-}
-
-$Section = $Content.Substring($SectionStart)
-
-$NextHeadingMatch = [regex]::Match(
-    $Section.Substring($SectionHeading.Length),
-    '(?m)^##\s+'
-)
-
-if ($NextHeadingMatch.Success) {
-    $Section = $Section.Substring(
-        0,
-        $SectionHeading.Length + $NextHeadingMatch.Index
-    )
-}
-
-$MdsVersionMatch = [regex]::Match(
-    $Section,
-    'MDS version (?<Version>\d+)',
-    [Text.RegularExpressions.RegexOptions]::IgnoreCase
-)
-
-if (-not $MdsVersionMatch.Success) {
-    throw "Could not determine the MDS version from the Microsoft document."
-}
-
-$MdsVersion = [int] $MdsVersionMatch.Groups['Version'].Value
-
-$DocumentDateMatch = [regex]::Match(
-    $Content,
-    '(?m)^ms\.date:\s*(?<Date>[^\r\n]+)$'
-)
-
-$DocumentDate = if ($DocumentDateMatch.Success) {
-    $DocumentDateMatch.Groups['Date'].Value.Trim()
-}
-else {
-    $null
-}
-
 function ConvertTo-CapabilityBoolean {
     param (
         [Parameter(Mandatory)]
         [string] $Value
     )
 
-    $Value = [System.Net.WebUtility]::HtmlDecode($Value).Trim()
-    $Value = [regex]::Replace($Value, '<[^>]+>', '').Trim()
+    $Value = $Value.Trim()
 
-    if ($Value.Contains([char] 0x2705)) {
-        return $true
-    }
-
-    if ($Value.Contains([char] 0x274C)) {
-        return $false
-    }
-
-    if ($Value.Contains([char] 0x2714)) {
-        return $true
-    }
-
-    if ($Value.Contains([char] 0x2716)) {
-        return $false
-    }
+    if ($Value.Contains([char]0x2705)) { return $true }
+    if ($Value.Contains([char]0x274C)) { return $false }
 
     switch ($Value.ToLowerInvariant()) {
         'true'  { return $true }
@@ -99,25 +39,53 @@ function ConvertTo-CapabilityBoolean {
     }
 }
 
+Write-Host "Downloading Microsoft Entra documentation source..."
+$Content = (Invoke-WebRequest -Uri $SourceUri -Method Get -ErrorAction Stop).Content
+
+$SectionHeading = '## FIDO2 security keys eligible for attestation with Microsoft Entra ID'
+$SectionStart = $Content.IndexOf($SectionHeading, [StringComparison]::Ordinal)
+
+if ($SectionStart -lt 0) {
+    throw "Could not find the expected FIDO2 attestation section in the Microsoft document."
+}
+
+$Section = $Content.Substring($SectionStart)
+$Remainder = $Section.Substring($SectionHeading.Length)
+$NextHeadingMatch = [regex]::Match($Remainder, '(?m)^##\s+')
+
+if ($NextHeadingMatch.Success) {
+    $Section = $Section.Substring(0, $SectionHeading.Length + $NextHeadingMatch.Index)
+}
+
+$MdsVersionMatch = [regex]::Match(
+    $Section,
+    'MDS version (?<Version>\d+)',
+    [Text.RegularExpressions.RegexOptions]::IgnoreCase
+)
+
+if (-not $MdsVersionMatch.Success) {
+    throw "Could not determine the MDS version from the Microsoft document."
+}
+
+$MdsVersion = [int]$MdsVersionMatch.Groups['Version'].Value
+
+$DocumentDateMatch = [regex]::Match($Content, '(?m)^ms\.date:\s*(?<Date>[^\r\n]+)$')
+$DocumentDate = if ($DocumentDateMatch.Success) {
+    $DocumentDateMatch.Groups['Date'].Value.Trim()
+}
+else {
+    $null
+}
+
 $AaguidPattern = '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 
 $ScrapedEntries = foreach ($Line in ($Section -split '\r?\n')) {
-    if ($Line -notmatch '\|') {
-        continue
-    }
+    if ($Line -notmatch '\|') { continue }
 
-    $Columns = @(
-        $Line -split '\|' |
-            ForEach-Object { $_.Trim() }
-    )
+    $Columns = @($Line -split '\|' | ForEach-Object { $_.Trim() })
 
-    if ($Columns.Count -lt 6) {
-        continue
-    }
-
-    if ($Columns[1] -notmatch $AaguidPattern) {
-        continue
-    }
+    if ($Columns.Count -lt 6) { continue }
+    if ($Columns[1] -notmatch $AaguidPattern) { continue }
 
     [PSCustomObject][ordered]@{
         Description = $Columns[0]
@@ -126,6 +94,7 @@ $ScrapedEntries = foreach ($Line in ($Section -split '\r?\n')) {
         Usb         = ConvertTo-CapabilityBoolean -Value $Columns[3]
         Nfc         = ConvertTo-CapabilityBoolean -Value $Columns[4]
         Ble         = ConvertTo-CapabilityBoolean -Value $Columns[5]
+        Source      = 'MicrosoftLearn'
     }
 }
 
@@ -135,13 +104,63 @@ if ($ScrapedEntries.Count -lt 10) {
     throw "Only $($ScrapedEntries.Count) AAGUID rows were parsed. The Microsoft page format may have changed, so the dataset was not updated."
 }
 
-$DuplicateAaguids = $ScrapedEntries |
-    Group-Object Aaguid |
+$DuplicateScrapedAaguids = $ScrapedEntries | Group-Object Aaguid | Where-Object Count -gt 1
+if ($DuplicateScrapedAaguids) {
+    throw "Duplicate AAGUIDs found in Microsoft table: $($DuplicateScrapedAaguids.Name -join ', ')"
+}
+
+$ManualEntries = @()
+if (Test-Path $ManualPath) {
+    $ManualEntries = @(Get-Content -Path $ManualPath -Raw -ErrorAction Stop | ConvertFrom-Json)
+}
+
+foreach ($ManualEntry in $ManualEntries) {
+    if (-not $ManualEntry.Aaguid -or $ManualEntry.Aaguid -notmatch $AaguidPattern) {
+        throw "Invalid AAGUID in manual dataset: '$($ManualEntry.Aaguid)'"
+    }
+
+    if (-not $ManualEntry.Description) {
+        throw "Manual entry '$($ManualEntry.Aaguid)' has no Description."
+    }
+}
+
+$DuplicateManualAaguids = $ManualEntries |
+    Group-Object { $_.Aaguid.ToLowerInvariant() } |
     Where-Object Count -gt 1
 
-if ($DuplicateAaguids) {
-    $Values = ($DuplicateAaguids.Name -join ', ')
-    throw "Duplicate AAGUIDs found in the parsed Microsoft table: $Values"
+if ($DuplicateManualAaguids) {
+    throw "Duplicate AAGUIDs found in manual dataset: $($DuplicateManualAaguids.Name -join ', ')"
+}
+
+$CombinedEntries = [System.Collections.Generic.List[object]]::new()
+
+foreach ($Entry in $ScrapedEntries) {
+    $CombinedEntries.Add($Entry)
+}
+
+foreach ($ManualEntry in $ManualEntries) {
+    $Aaguid = $ManualEntry.Aaguid.ToLowerInvariant()
+
+    $ExistingMatch = $CombinedEntries |
+        Where-Object Aaguid -eq $Aaguid |
+        Select-Object -First 1
+
+    if ($ExistingMatch) {
+        Write-Host "Manual AAGUID $Aaguid already exists in Microsoft Learn; using Microsoft Learn entry."
+        continue
+    }
+
+    $CombinedEntries.Add(
+        [PSCustomObject][ordered]@{
+            Description = $ManualEntry.Description
+            Aaguid      = $Aaguid
+            Bio         = $null
+            Usb         = $null
+            Nfc         = $null
+            Ble         = $null
+            Source      = 'Manual'
+        }
+    )
 }
 
 $OutputDirectory = Split-Path -Path $OutputPath -Parent
@@ -153,23 +172,18 @@ $Existing = $null
 $ExistingByAaguid = @{}
 
 if (Test-Path $OutputPath) {
-    try {
-        $Existing = Get-Content -Path $OutputPath -Raw | ConvertFrom-Json
+    $Existing = Get-Content -Path $OutputPath -Raw -ErrorAction Stop | ConvertFrom-Json
 
-        foreach ($Entry in $Existing.Entries) {
-            $ExistingByAaguid[$Entry.Aaguid.ToLowerInvariant()] = $Entry
-        }
-    }
-    catch {
-        throw "Existing dataset could not be parsed: $($_.Exception.Message)"
+    foreach ($Entry in $Existing.Entries) {
+        $ExistingByAaguid[$Entry.Aaguid.ToLowerInvariant()] = $Entry
     }
 }
 
 $CurrentAaguids = @{}
 $MergedEntries = @()
 
-foreach ($Entry in $ScrapedEntries) {
-    $Aaguid = $Entry.Aaguid
+foreach ($Entry in $CombinedEntries) {
+    $Aaguid = $Entry.Aaguid.ToLowerInvariant()
     $CurrentAaguids[$Aaguid] = $true
 
     $FirstSeen = if ($ExistingByAaguid.ContainsKey($Aaguid)) {
@@ -186,6 +200,7 @@ foreach ($Entry in $ScrapedEntries) {
         Usb         = $Entry.Usb
         Nfc         = $Entry.Nfc
         Ble         = $Entry.Ble
+        Source      = $Entry.Source
         Active      = $true
         FirstSeen   = $FirstSeen
         RemovedOn   = $null
@@ -196,9 +211,7 @@ if ($Existing) {
     foreach ($OldEntry in $Existing.Entries) {
         $Aaguid = $OldEntry.Aaguid.ToLowerInvariant()
 
-        if ($CurrentAaguids.ContainsKey($Aaguid)) {
-            continue
-        }
+        if ($CurrentAaguids.ContainsKey($Aaguid)) { continue }
 
         $RemovedOn = if ($OldEntry.Active -eq $false -and $OldEntry.RemovedOn) {
             $OldEntry.RemovedOn
@@ -207,13 +220,21 @@ if ($Existing) {
             $Today
         }
 
+        $Source = if ($OldEntry.PSObject.Properties.Name -contains 'Source') {
+            $OldEntry.Source
+        }
+        else {
+            'Unknown'
+        }
+
         $MergedEntries += [PSCustomObject][ordered]@{
             Description = $OldEntry.Description
             Aaguid      = $Aaguid
-            Bio         = [bool] $OldEntry.Bio
-            Usb         = [bool] $OldEntry.Usb
-            Nfc         = [bool] $OldEntry.Nfc
-            Ble         = [bool] $OldEntry.Ble
+            Bio         = $OldEntry.Bio
+            Usb         = $OldEntry.Usb
+            Nfc         = $OldEntry.Nfc
+            Ble         = $OldEntry.Ble
+            Source      = $Source
             Active      = $false
             FirstSeen   = $OldEntry.FirstSeen
             RemovedOn   = $RemovedOn
@@ -223,53 +244,30 @@ if ($Existing) {
 
 $MergedEntries = @(
     $MergedEntries |
-        Sort-Object @{ Expression = 'Active'; Descending = $true }, Description, Aaguid
+        Sort-Object @{ Expression = 'Active'; Descending = $true }, Source, Description, Aaguid
 )
 
-$Comparable = [ordered]@{
-    MdsVersion        = $MdsVersion
-    MicrosoftDocDate  = $DocumentDate
-    Entries           = $MergedEntries
-}
-
-$ComparableJson = $Comparable | ConvertTo-Json -Depth 5 -Compress
-
-$ExistingComparableJson = $null
-if ($Existing) {
-    $ExistingComparable = [ordered]@{
-        MdsVersion        = $Existing.MdsVersion
-        MicrosoftDocDate  = $Existing.MicrosoftDocDate
-        Entries           = $Existing.Entries
-    }
-
-    $ExistingComparableJson = $ExistingComparable |
-        ConvertTo-Json -Depth 5 -Compress
-}
-
-$GeneratedAtUtc = if ($Existing -and $ComparableJson -eq $ExistingComparableJson) {
-    $Existing.GeneratedAtUtc
-}
-else {
-    $Now
-}
-
 $Dataset = [PSCustomObject][ordered]@{
-    SchemaVersion     = 1
-    GeneratedAtUtc    = $GeneratedAtUtc
-    Source            = $LearnUrl
-    SourceMarkdown    = $SourceUri
-    MicrosoftDocDate  = $DocumentDate
-    MdsVersion        = $MdsVersion
-    ActiveEntryCount  = @($MergedEntries | Where-Object Active).Count
-    TotalTrackedCount = $MergedEntries.Count
-    Entries           = $MergedEntries
+    SchemaVersion       = 1
+    GeneratedAtUtc      = $Now
+    Source              = $LearnUrl
+    SourceMarkdown      = $SourceUri
+    MicrosoftDocDate    = $DocumentDate
+    MdsVersion          = $MdsVersion
+    ActiveEntryCount    = @($MergedEntries | Where-Object Active).Count
+    MicrosoftEntryCount = @($MergedEntries | Where-Object { $_.Active -and $_.Source -eq 'MicrosoftLearn' }).Count
+    ManualEntryCount    = @($MergedEntries | Where-Object { $_.Active -and $_.Source -eq 'Manual' }).Count
+    TotalTrackedCount   = $MergedEntries.Count
+    Entries             = $MergedEntries
 }
 
-$Json = $Dataset | ConvertTo-Json -Depth 5
-
-Set-Content -Path $OutputPath -Value $Json -Encoding utf8
+$Dataset |
+    ConvertTo-Json -Depth 5 |
+    Set-Content -Path $OutputPath -Encoding utf8
 
 Write-Host "Dataset written to $OutputPath"
 Write-Host "MDS version: $MdsVersion"
+Write-Host "Microsoft Learn AAGUIDs: $($Dataset.MicrosoftEntryCount)"
+Write-Host "Manual AAGUIDs: $($Dataset.ManualEntryCount)"
 Write-Host "Active AAGUIDs: $($Dataset.ActiveEntryCount)"
 Write-Host "Total tracked AAGUIDs: $($Dataset.TotalTrackedCount)"
